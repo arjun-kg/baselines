@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "run_atari.py", line 4, in <module>
+    from baselines.common.cmd_util import make_atari_env, atari_arg_parser
+  File "/storage/home/arjunkg/baselines/baselines/common/__init__.py", line 5, in <module>
+    from baselines.common.misc_util import *
+  File "/storage/home/arjunkg/baselines/baselines/common/misc_util.py", line 1, in <module>
+    import gym
+ModuleNotFoundError: No module named 'gym'
