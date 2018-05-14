@@ -8,24 +8,34 @@ from baselines import logger
 from collections import deque
 from baselines.common import explained_variance
 from baselines.common.runners import AbstractEnvRunner
+import gym
 import pdb 
+
+NUM_REPETITIONS = 10
+
+
 class Model(object):
-    def __init__(self, *, policy, ob_space, ac_space, nbatch_act, nbatch_train,
+    def __init__(self, *, policy, ob_space, ac_space,rep_space, nbatch_act, nbatch_train,
                 nsteps, ent_coef, vf_coef, max_grad_norm):
         sess = tf.get_default_session()
 
-        act_model = policy(sess, ob_space, ac_space, nbatch_act, 1, reuse=False) #Policy network?
-        train_model = policy(sess, ob_space, ac_space, nbatch_train, nsteps, reuse=True) #Value function network?
+        act_model = policy(sess, ob_space, ac_space,rep_space, nbatch_act, 1, reuse=False) #Policy network?
+        train_model = policy(sess, ob_space, ac_space,rep_space, nbatch_train, nsteps, reuse=True) #Value function network?
+        # act_model = policy(sess,ob_space,rep_space,nbatch_rep,1,reuse=True) #Repetition Network WHATISTHISTHOUGH?
 
         A = train_model.pdtype.sample_placeholder([None])
+        REP = train_model.pdtype_rep.sample_placeholder([None])
+
         ADV = tf.placeholder(tf.float32, [None])
         R = tf.placeholder(tf.float32, [None])
-        OLDNEGLOGPAC = tf.placeholder(tf.float32, [None]) #Probability over actions? 
+        OLDNEGLOGPAC = tf.placeholder(tf.float32, [None]) #Probability over actions?
+        OLDNEGLOGPREP =  tf.placeholder(tf.float32, [None]) #Probability over repeititons 
         OLDVPRED = tf.placeholder(tf.float32, [None])
         LR = tf.placeholder(tf.float32, [])
         CLIPRANGE = tf.placeholder(tf.float32, [])
 
         neglogpac = train_model.pd.neglogp(A)
+        neglogprep = train_model.pd_rep.neglogp(REP)
         entropy = tf.reduce_mean(train_model.pd.entropy())
 
         vpred = train_model.vf
@@ -33,13 +43,24 @@ class Model(object):
         vf_losses1 = tf.square(vpred - R)
         vf_losses2 = tf.square(vpredclipped - R)
         vf_loss = .5 * tf.reduce_mean(tf.maximum(vf_losses1, vf_losses2))
+
         ratio = tf.exp(OLDNEGLOGPAC - neglogpac)
         pg_losses = -ADV * ratio
         pg_losses2 = -ADV * tf.clip_by_value(ratio, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
         pg_loss = tf.reduce_mean(tf.maximum(pg_losses, pg_losses2))
         approxkl = .5 * tf.reduce_mean(tf.square(neglogpac - OLDNEGLOGPAC))
         clipfrac = tf.reduce_mean(tf.to_float(tf.greater(tf.abs(ratio - 1.0), CLIPRANGE)))
-        loss = pg_loss - entropy * ent_coef + vf_loss * vf_coef
+
+        ratio_rep = tf.exp(OLDNEGLOGPREP - neglogprep)
+        pg_losses_rep = -ADV * ratio_rep
+        pg_losses2_rep = -ADV * tf.clip_by_value(ratio_rep, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
+        pg_loss_rep = tf.reduce_mean(tf.maximum(pg_losses_rep, pg_losses2_rep))
+        approxkl_rep = .5 * tf.reduce_mean(tf.square(neglogprep - OLDNEGLOGPREP))
+        # clipfrac = tf.reduce_mean(tf.to_float(tf.greater(tf.abs(ratio - 1.0), CLIPRANGE)))
+
+
+        loss = pg_loss*pg_loss_rep - entropy * ent_coef + vf_loss * vf_coef
+
         with tf.variable_scope('model'):
             params = tf.trainable_variables()
         grads = tf.gradients(loss, params)
@@ -49,15 +70,15 @@ class Model(object):
         trainer = tf.train.AdamOptimizer(learning_rate=LR, epsilon=1e-5)
         _train = trainer.apply_gradients(grads)
 
-        def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
-            pdb.set_trace()
+        def train(lr, cliprange, obs, returns, masks, actions,repetitions, values, neglogpacs, neglogreps,states=None):
+            # pdb.set_trace()
             advs = returns - values
             advs = (advs - advs.mean()) / (advs.std() + 1e-8)
-            td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,
-                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values}
+            td_map = {train_model.X:obs, A:actions, REP: repetitions,ADV:advs, R:returns, LR:lr,
+                    CLIPRANGE:cliprange, OLDNEGLOGPAC:neglogpacs, OLDVPRED:values,OLDNEGLOGPREP:neglogreps}
             if states is not None:
-                td_map[train_model.S] = states
-                td_map[train_model.M] = masks
+                td_map[act_model.S] = states
+                td_map[act_model.M] = masks
             return sess.run(
                 [pg_loss, vf_loss, entropy, approxkl, clipfrac, _train],
                 td_map
@@ -77,8 +98,8 @@ class Model(object):
             # If you want to load weights, also save/load observation scaling inside VecNormalize
 
         self.train = train
-        self.train_model = train_model
         self.act_model = act_model
+        self.train_model = train_model
         self.step = act_model.step
         self.value = act_model.value
         self.initial_state = act_model.initial_state
@@ -94,17 +115,38 @@ class Runner(AbstractEnvRunner):
         self.gamma = gamma
 
     def run(self):
-        mb_obs, mb_rewards, mb_actions, mb_values, mb_dones, mb_neglogpacs = [],[],[],[],[],[]
+        mb_obs, mb_rewards, mb_actions,mb_repetitions, mb_values, mb_dones, mb_neglogpacs,mb_neglogpreps = [],[],[],[],[],[],[],[]
         mb_states = self.states
         epinfos = []
         for _ in range(self.nsteps):
-            actions, values, self.states, neglogpacs = self.model.step(self.obs, self.states, self.dones)
+            actions, repetitions, values, self.states, neglogpacs,neglogpreps = self.model.step(self.obs, self.states, self.dones)
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
+            mb_repetitions.append(repetitions)
             mb_values.append(values)
             mb_neglogpacs.append(neglogpacs)
+            mb_neglogpreps.append(neglogpreps)
             mb_dones.append(self.dones)
-            self.obs[:], rewards, self.dones, infos = self.env.step(actions)
+            rep_counter = np.copy(repetitions)
+            actions_imm = np.copy(actions)
+
+            rewards = np.zeros(8)
+            infos = np.zeros(8,dtype='object')
+            self.dones = np.array(self.dones)
+            while np.any(rep_counter>=0):
+                # self.obs[rep_counter>=0], rewards_imm[rep_counter>=0], self.dones[rep_counter>=0],infos[rep_counter>=0] = self.env.step(actions[rep_counter>=0])  #THIS IS THE LINE
+                actions_imm[rep_counter<0]  = -1
+                rewards_imm = np.zeros(8)
+                dum1,dum2,dum3,dum4 = self.env.step(actions_imm)
+                self.obs[rep_counter>=0] = dum1[rep_counter>=0]
+                rewards_imm[rep_counter>=0] = dum2[rep_counter>=0]
+                self.dones[rep_counter>=0] = dum3[rep_counter>=0]
+                infos[rep_counter>=0] = np.array(dum4,dtype='object')[rep_counter>=0]
+
+                rewards += rewards_imm
+                rep_counter-=1
+            infos = tuple(infos) #Why though? 
+
             for info in infos:
                 maybeepinfo = info.get('episode')
                 if maybeepinfo: epinfos.append(maybeepinfo)
@@ -113,8 +155,10 @@ class Runner(AbstractEnvRunner):
         mb_obs = np.asarray(mb_obs, dtype=self.obs.dtype)
         mb_rewards = np.asarray(mb_rewards, dtype=np.float32)
         mb_actions = np.asarray(mb_actions)
+        mb_repetitions = np.asarray(mb_repetitions)
         mb_values = np.asarray(mb_values, dtype=np.float32)
         mb_neglogpacs = np.asarray(mb_neglogpacs, dtype=np.float32)
+        mb_neglogpreps = np.asarray(mb_neglogpreps, dtype=np.float32)
         mb_dones = np.asarray(mb_dones, dtype=np.bool)
         last_values = self.model.value(self.obs, self.states, self.dones)
         #discount/bootstrap off value fn
@@ -131,7 +175,7 @@ class Runner(AbstractEnvRunner):
             delta = mb_rewards[t] + self.gamma * nextvalues * nextnonterminal - mb_values[t]
             mb_advs[t] = lastgaelam = delta + self.gamma * self.lam * nextnonterminal * lastgaelam
         mb_returns = mb_advs + mb_values
-        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_values, mb_neglogpacs)),
+        return (*map(sf01, (mb_obs, mb_returns, mb_dones, mb_actions, mb_repetitions,mb_values, mb_neglogpacs,mb_neglogpreps)),
             mb_states, epinfos)
 # obs, returns, masks, actions, values, neglogpacs, states = runner.run()
 def sf01(arr):
@@ -160,12 +204,12 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
     nenvs = env.num_envs
     ob_space = env.observation_space
     ac_space = env.action_space
+    rep_space = gym.spaces.discrete.Discrete(NUM_REPETITIONS)
     nbatch = nenvs * nsteps
     nbatch_train = nbatch // nminibatches
 
-    make_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, nbatch_act=nenvs, nbatch_train=nbatch_train,
-                    nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef,
-                    max_grad_norm=max_grad_norm)
+    make_model = lambda : Model(policy=policy, ob_space=ob_space, ac_space=ac_space, rep_space = rep_space, nbatch_act=nenvs, nbatch_train=nbatch_train,
+                     nsteps=nsteps, ent_coef=ent_coef, vf_coef=vf_coef, max_grad_norm=max_grad_norm)
     if save_interval and logger.get_dir():
         import cloudpickle
         with open(osp.join(logger.get_dir(), 'make_model.pkl'), 'wb') as fh:
@@ -186,7 +230,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
         frac = 1.0 - (update - 1.0) / nupdates
         lrnow = lr(frac)
         cliprangenow = cliprange(frac)
-        obs, returns, masks, actions, values, neglogpacs, states, epinfos = runner.run() #pylint: disable=E0632
+        obs, returns, masks, actions, repetitions, values, neglogpacs,neglogpreps, states, epinfos = runner.run() #pylint: disable=E0632
         epinfobuf.extend(epinfos)
         mblossvals = []
         if states is None: # nonrecurrent version
@@ -196,7 +240,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                 for start in range(0, nbatch, nbatch_train):
                     end = start + nbatch_train
                     mbinds = inds[start:end]
-                    slices = (arr[mbinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                    slices = (arr[mbinds] for arr in (obs, returns, masks, actions, repetitions, values, neglogpacs,neglogpreps))
                     mblossvals.append(model.train(lrnow, cliprangenow, *slices))
         else: # recurrent version
             assert nenvs % nminibatches == 0
@@ -210,7 +254,7 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
                     end = start + envsperbatch
                     mbenvinds = envinds[start:end]
                     mbflatinds = flatinds[mbenvinds].ravel()
-                    slices = (arr[mbflatinds] for arr in (obs, returns, masks, actions, values, neglogpacs))
+                    slices = (arr[mbflatinds] for arr in (obs, returns, masks, actions, repetitions, values, neglogpacs,neglogpreps))
                     mbstates = states[mbenvinds]
                     mblossvals.append(model.train(lrnow, cliprangenow, *slices, mbstates))
 
