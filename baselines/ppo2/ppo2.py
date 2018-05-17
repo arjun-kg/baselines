@@ -50,7 +50,6 @@ class Model(object):
         _train = trainer.apply_gradients(grads)
 
         def train(lr, cliprange, obs, returns, masks, actions, values, neglogpacs, states=None):
-            pdb.set_trace()
             advs = returns - values
             advs = (advs - advs.mean()) / (advs.std() + 1e-8)
             td_map = {train_model.X:obs, A:actions, ADV:advs, R:returns, LR:lr,

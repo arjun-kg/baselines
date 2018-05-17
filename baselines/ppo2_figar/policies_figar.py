@@ -129,6 +129,8 @@ class MlpPolicy(object):
     def __init__(self, sess, ob_space, ac_space, nbatch, nsteps, reuse=False): #pylint: disable=W0613
         ob_shape = (nbatch,) + ob_space.shape
         self.pdtype = make_pdtype(ac_space)
+        self.pdtype_rep = make_pdtype(rep_space)
+
         X = tf.placeholder(tf.float32, ob_shape, name='Ob') #obs
         with tf.variable_scope("model", reuse=reuse):
             activ = tf.tanh
@@ -138,17 +140,21 @@ class MlpPolicy(object):
             vf_h1 = activ(fc(flatten(X), 'vf_fc1', nh=64, init_scale=np.sqrt(2)))
             vf_h2 = activ(fc(vf_h1, 'vf_fc2', nh=64, init_scale=np.sqrt(2)))
             vf = fc(vf_h2, 'vf', 1)[:,0]
+            with tf.variable_scope("rep",reuse=reuse):
+                self.pd_rep,self.pi_rep = self.pdtype_rep.pdfromlatent(h,init_scale=0.01)
 
             self.pd, self.pi = self.pdtype.pdfromlatent(pi_h2, init_scale=0.01)
 
 
         a0 = self.pd.sample()
         neglogp0 = self.pd.neglogp(a0)
+        r0 = self.pd_rep.sample()
+        neglogp_rep0 = self.pd_rep.neglogp(r0)
         self.initial_state = None
 
         def step(ob, *_args, **_kwargs):
-            a, v, neglogp = sess.run([a0, vf, neglogp0], {X:ob})
-            return a, v, self.initial_state, neglogp
+            a,r, v, neglogp = sess.run([a0,r0, vf, neglogp0], {X:ob})
+            return a, r,v, self.initial_state, neglogp
 
         def value(ob, *_args, **_kwargs):
             return sess.run(vf, {X:ob})

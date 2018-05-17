@@ -11,7 +11,7 @@ from baselines.common.runners import AbstractEnvRunner
 import gym
 import pdb 
 
-NUM_REPETITIONS = 10
+NUM_REPETITIONS = 1
 
 
 class Model(object):
@@ -21,7 +21,6 @@ class Model(object):
 
         act_model = policy(sess, ob_space, ac_space,rep_space, nbatch_act, 1, reuse=False) #Policy network?
         train_model = policy(sess, ob_space, ac_space,rep_space, nbatch_train, nsteps, reuse=True) #Value function network?
-        # act_model = policy(sess,ob_space,rep_space,nbatch_rep,1,reuse=True) #Repetition Network WHATISTHISTHOUGH?
 
         A = train_model.pdtype.sample_placeholder([None])
         REP = train_model.pdtype_rep.sample_placeholder([None])
