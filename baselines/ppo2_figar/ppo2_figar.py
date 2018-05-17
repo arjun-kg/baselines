@@ -11,7 +11,7 @@ from baselines.common.runners import AbstractEnvRunner
 import gym
 import pdb 
 
-NUM_REPETITIONS = 1
+NUM_REPETITIONS = 10
 
 
 class Model(object):
@@ -51,13 +51,15 @@ class Model(object):
         clipfrac = tf.reduce_mean(tf.to_float(tf.greater(tf.abs(ratio - 1.0), CLIPRANGE)))
 
         ratio_rep = tf.exp(OLDNEGLOGPREP - neglogprep)
-        pg_losses_rep = -ADV * ratio_rep
-        pg_losses2_rep = -ADV * tf.clip_by_value(ratio_rep, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
+        # pg_losses_rep = ADV * ratio_rep
+        # pg_losses2_rep = ADV * tf.clip_by_value(ratio_rep, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
+        pg_losses_rep = ratio_rep
+        pg_losses2_rep = tf.clip_by_value(ratio_rep, 1.0 - CLIPRANGE, 1.0 + CLIPRANGE)
         pg_loss_rep = tf.reduce_mean(tf.maximum(pg_losses_rep, pg_losses2_rep))
         approxkl_rep = .5 * tf.reduce_mean(tf.square(neglogprep - OLDNEGLOGPREP))
         # clipfrac = tf.reduce_mean(tf.to_float(tf.greater(tf.abs(ratio - 1.0), CLIPRANGE)))
 
-
+        # pg_loss_rep = 1
         loss = pg_loss*pg_loss_rep - entropy * ent_coef + vf_loss * vf_coef
 
         with tf.variable_scope('model'):
@@ -119,6 +121,7 @@ class Runner(AbstractEnvRunner):
         epinfos = []
         for _ in range(self.nsteps):
             actions, repetitions, values, self.states, neglogpacs,neglogpreps = self.model.step(self.obs, self.states, self.dones)
+            logger.logkv("repetitions",repetitions[0])
             mb_obs.append(self.obs.copy())
             mb_actions.append(actions)
             mb_repetitions.append(repetitions)
@@ -126,15 +129,18 @@ class Runner(AbstractEnvRunner):
             mb_neglogpacs.append(neglogpacs)
             mb_neglogpreps.append(neglogpreps)
             mb_dones.append(self.dones)
+
+
+            #ATARI: 
             rep_counter = np.copy(repetitions)
             actions_imm = np.copy(actions)
-
             rewards = np.zeros(8)
             infos = np.zeros(8,dtype='object')
             self.dones = np.array(self.dones)
+
             while np.any(rep_counter>=0):
                 # self.obs[rep_counter>=0], rewards_imm[rep_counter>=0], self.dones[rep_counter>=0],infos[rep_counter>=0] = self.env.step(actions[rep_counter>=0])  #THIS IS THE LINE
-                actions_imm[rep_counter<0]  = -1
+                # actions_imm[rep_counter<0]  = -1
                 rewards_imm = np.zeros(8)
                 dum1,dum2,dum3,dum4 = self.env.step(actions_imm)
                 self.obs[rep_counter>=0] = dum1[rep_counter>=0]
@@ -145,6 +151,13 @@ class Runner(AbstractEnvRunner):
                 rewards += rewards_imm
                 rep_counter-=1
             infos = tuple(infos) #Why though? 
+
+            #Mujoco
+            # rewards = 0
+            # for _ in range(repetitions[0]+1):
+            #     self.obs[:], rewards_imm, self.dones,infos = self.env.step(actions)
+            #     rewards += rewards_imm
+
 
             for info in infos:
                 maybeepinfo = info.get('episode')
@@ -270,7 +283,6 @@ def learn(*, policy, env, nsteps, total_timesteps, ent_coef, lr,
             logger.logkv('eprewmean', safemean([epinfo['r'] for epinfo in epinfobuf]))
             logger.logkv('eplenmean', safemean([epinfo['l'] for epinfo in epinfobuf]))
             logger.logkv('time_elapsed', tnow - tfirststart)
-            logger.logkv("Repetitions",np.median(repetitions))
             for (lossval, lossname) in zip(lossvals, model.loss_names):
                 logger.logkv(lossname, lossval)
             logger.dumpkvs()
