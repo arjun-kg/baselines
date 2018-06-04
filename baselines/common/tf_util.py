@@ -279,3 +279,13 @@ def display_var_info(vars):
         logger.info("   %s%s %i params %s" % (name, " "*(55-len(name)), v_params, str(v.shape)))
 
     logger.info("Total model parameters: %0.2f million" % (count_params*1e-6))
+
+
+def dense(x, size, name, weight_init=None, bias=True):
+    w = tf.get_variable(name + "/w", [x.get_shape()[1], size], initializer=weight_init)
+    ret = tf.matmul(x, w)
+    if bias:
+        b = tf.get_variable(name + "/b", [size], initializer=tf.zeros_initializer)
+        return ret + b
+    else:
+        return ret

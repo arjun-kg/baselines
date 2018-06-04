@@ -120,6 +120,7 @@ class Runner(AbstractEnvRunner):
             rewards = rewards.tolist()
             dones = dones.tolist()
             if dones[-1] == 0:
+
                 rewards = discount_with_dones(rewards+[value], dones+[0], self.gamma)[:-1]
             else:
                 rewards = discount_with_dones(rewards, dones, self.gamma)
@@ -131,7 +132,6 @@ class Runner(AbstractEnvRunner):
         return mb_obs, mb_states, mb_rewards, mb_masks, mb_actions, mb_values
 
 def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, ent_coef=0.01, max_grad_norm=0.5, lr=7e-4, lrschedule='linear', epsilon=1e-5, alpha=0.99, gamma=0.99, log_interval=100):
-    tf.reset_default_graph()
     set_global_seeds(seed)
 
     nenvs = env.num_envs
@@ -158,3 +158,4 @@ def learn(policy, env, seed, nsteps=5, total_timesteps=int(80e6), vf_coef=0.5, e
             logger.record_tabular("explained_variance", float(ev))
             logger.dump_tabular()
     env.close()
+    return model
